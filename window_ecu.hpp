@@ -112,8 +112,6 @@ public:
 
     	// Send the response back
     	app_->send(resp);
-
-    	terminate();
 }
 
 private:
