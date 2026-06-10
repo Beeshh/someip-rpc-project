@@ -4,125 +4,164 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 #include <vsomeip/vsomeip.hpp>
-
-#if defined ANDROID || defined __ANDROID__
-#include "android/log.h"
-#define LOG_TAG "hello_world_client"
-#define LOG_INF(...) fprintf(stdout, __VA_ARGS__), fprintf(stdout, "\n"), (void)__android_log_print(ANDROID_LOG_INFO, LOG_TAG, ##__VA_ARGS__)
-#define LOG_ERR(...) fprintf(stderr, __VA_ARGS__), fprintf(stderr, "\n"), (void)__android_log_print(ANDROID_LOG_ERROR, LOG_TAG, ##__VA_ARGS__)
-#else
 #include <cstdio>
+
 #define LOG_INF(...) fprintf(stdout, __VA_ARGS__), fprintf(stdout, "\n")
 #define LOG_ERR(...) fprintf(stderr, __VA_ARGS__), fprintf(stderr, "\n")
-#endif
 
-static vsomeip::service_t service_id = 0x1111;
-static vsomeip::instance_t service_instance_id = 0x2222;
-static vsomeip::method_t service_method_id = 0x3333;
+// Window ECU identifiers
+static vsomeip::service_t   window_service_id   = 0x1111;
+static vsomeip::instance_t  window_instance_id  = 0x2222;
+static vsomeip::method_t    window_method_id    = 0x3333;
+
+// Speed ECU identifiers
+static vsomeip::service_t   speed_service_id    = 0x1234;
+static vsomeip::instance_t  speed_instance_id   = 0x5678;
+static vsomeip::method_t    speed_method_id     = 0x0421;
 
 class hello_world_client {
 public:
-    // Get the vSomeIP runtime and
-    // create a application via the runtime, we could pass the application name
-    // here otherwise the name supplied via the VSOMEIP_APPLICATION_NAME
-    // environment variable is used
-    hello_world_client() : rtm_(vsomeip::runtime::get()), app_(rtm_->create_application()) { }
+    hello_world_client()
+        : rtm_(vsomeip::runtime::get()),
+          app_(rtm_->create_application()),
+          window_position_(0), vehicle_speed_(0),
+          window_received_(false), speed_received_(false) {}
 
     bool init() {
-        // init the application
         if (!app_->init()) {
             LOG_ERR("Couldn't initialize application");
             return false;
         }
 
-        // register a state handler to get called back after registration at the
-        // runtime was successful
-        app_->register_state_handler(std::bind(&hello_world_client::on_state_cbk, this, std::placeholders::_1));
+        app_->register_state_handler(
+            std::bind(&hello_world_client::on_state_cbk, this,
+                      std::placeholders::_1));
 
-        // register a callback for responses from the service
-        app_->register_message_handler(vsomeip::ANY_SERVICE, service_instance_id, vsomeip::ANY_METHOD,
-                                       std::bind(&hello_world_client::on_message_cbk, this, std::placeholders::_1));
+        // Handle responses from BOTH services
+        app_->register_message_handler(
+            vsomeip::ANY_SERVICE, vsomeip::ANY_INSTANCE, vsomeip::ANY_METHOD,
+            std::bind(&hello_world_client::on_message_cbk, this,
+                      std::placeholders::_1));
 
-        // register a callback which is called as soon as the service is available
-        app_->register_availability_handler(service_id, service_instance_id,
-                                            std::bind(&hello_world_client::on_availability_cbk, this, std::placeholders::_1,
-                                                      std::placeholders::_2, std::placeholders::_3));
+        // Watch availability of BOTH services
+        app_->register_availability_handler(
+            window_service_id, window_instance_id,
+            std::bind(&hello_world_client::on_availability_cbk, this,
+                      std::placeholders::_1, std::placeholders::_2,
+                      std::placeholders::_3));
+
+        app_->register_availability_handler(
+            speed_service_id, speed_instance_id,
+            std::bind(&hello_world_client::on_availability_cbk, this,
+                      std::placeholders::_1, std::placeholders::_2,
+                      std::placeholders::_3));
+
         return true;
     }
 
-    void start() {
-        // start the application and wait for the on_event callback to be called
-        // this method only returns when app_->stop() is called
-        app_->start();
-    }
+    void start() { app_->start(); }
 
     void on_state_cbk(vsomeip::state_type_e _state) {
         if (_state == vsomeip::state_type_e::ST_REGISTERED) {
-            // we are registered at the runtime now we can request the service
-            // and wait for the on_availability callback to be called
-            app_->request_service(service_id, service_instance_id);
+            app_->request_service(window_service_id, window_instance_id);
+            app_->request_service(speed_service_id,  speed_instance_id);
         }
     }
 
-    void on_availability_cbk(vsomeip::service_t _service, vsomeip::instance_t _instance, bool _is_available) {
-        // Check if the available service is the the hello world service
-        if (service_id == _service && service_instance_id == _instance && _is_available) {
-            // The service is available then we send the request
-            // Create a new request
-            std::shared_ptr<vsomeip::message> rq = rtm_->create_request();
-            // Set the hello world service as target of the request
-            rq->set_service(service_id);
-            rq->set_instance(service_instance_id);
-            rq->set_method(service_method_id);
+    void on_availability_cbk(vsomeip::service_t _service,
+                             vsomeip::instance_t _instance,
+                             bool _is_available) {
+        if (!_is_available) return;
 
-            // Create a payload which will be sent to the service
-            std::shared_ptr<vsomeip::payload> pl = rtm_->create_payload();
-            std::string str("World");
-            std::vector<vsomeip::byte_t> pl_data(std::begin(str), std::end(str));
+        // Send request to whichever service just became available
+        std::shared_ptr<vsomeip::message> rq = rtm_->create_request();
 
-            pl->set_data(pl_data);
-            rq->set_payload(pl);
-            // Send the request to the service. Response will be delivered to the
-            // registered message handler
-            LOG_INF("Sending: %s", str.c_str());
-            app_->send(rq);
+        if (_service == window_service_id && _instance == window_instance_id) {
+            rq->set_service(window_service_id);
+            rq->set_instance(window_instance_id);
+            rq->set_method(window_method_id);
+            LOG_INF("Requesting window position from Window ECU...");
+        } else if (_service == speed_service_id && _instance == speed_instance_id) {
+            rq->set_service(speed_service_id);
+            rq->set_instance(speed_instance_id);
+            rq->set_method(speed_method_id);
+            LOG_INF("Requesting vehicle speed from Speed ECU...");
+        } else {
+            return;
         }
+
+        // Empty payload (just a request, no data needed)
+        std::shared_ptr<vsomeip::payload> pl = rtm_->create_payload();
+        rq->set_payload(pl);
+        app_->send(rq);
     }
 
     void on_message_cbk(const std::shared_ptr<vsomeip::message>& _response) {
-    if (service_id == _response->get_service() &&
-        service_instance_id == _response->get_instance() &&
-        vsomeip::message_type_e::MT_RESPONSE == _response->get_message_type() &&
-        vsomeip::return_code_e::E_OK == _response->get_return_code()) {
+        if (_response->get_message_type() != vsomeip::message_type_e::MT_RESPONSE)
+            return;
+        if (_response->get_return_code() != vsomeip::return_code_e::E_OK)
+            return;
 
         std::shared_ptr<vsomeip::payload> pl = _response->get_payload();
+        if (!pl || pl->get_length() == 0) return;
 
-        if (pl && pl->get_length() > 0) {
-            uint8_t window_position = pl->get_data()[0];
+        vsomeip::service_t svc = _response->get_service();
 
-            LOG_INF("Window position received: %d %%", static_cast<int>(window_position));
-        } else {
-            LOG_ERR("Received empty payload");
+        if (svc == window_service_id) {
+            window_position_ = pl->get_data()[0];
+            window_received_ = true;
+            LOG_INF("Window position received: %d %%",
+                    static_cast<int>(window_position_));
+        } else if (svc == speed_service_id) {
+            vehicle_speed_ = pl->get_data()[0];
+            speed_received_ = true;
+            LOG_INF("Vehicle speed received: %d km/h",
+                    static_cast<int>(vehicle_speed_));
         }
 
-        stop();
+        // Only print mode once both values are received
+        if (window_received_ && speed_received_) {
+            evaluate_and_print();
+            stop();
+        }
     }
-}
+
+    void evaluate_and_print() {
+        // Determine mode from window position (matches Pub/Sub logic)
+        const char* mode;
+        const char* speed_range;
+        if (window_position_ >= 80) {
+            mode = "LOW";
+            speed_range = "0-30 km/h";
+        } else if (window_position_ >= 50) {
+            mode = "MEDIUM";
+            speed_range = "31-60 km/h";
+        } else if (window_position_ >= 20) {
+            mode = "HIGH";
+            speed_range = "61-90 km/h";
+        } else {
+            mode = "FAST";
+            speed_range = "91-120 km/h";
+        }
+        LOG_INF("Climate ECU: Window=%d%% | Vehicle Speed=%d km/h (%s)",
+                static_cast<int>(window_position_),
+                static_cast<int>(vehicle_speed_),
+                mode);
+    }
 
     void stop() {
-        // unregister the state handler
         app_->unregister_state_handler();
-        // unregister the message handler
-        app_->unregister_message_handler(vsomeip::ANY_SERVICE, service_instance_id, vsomeip::ANY_METHOD);
-        // alternatively unregister all registered handlers at once
         app_->clear_all_handler();
-        // release the service
-        app_->release_service(service_id, service_instance_id);
-        // shutdown the application
+        app_->release_service(window_service_id, window_instance_id);
+        app_->release_service(speed_service_id,  speed_instance_id);
         app_->stop();
     }
 
 private:
-    std::shared_ptr<vsomeip::runtime> rtm_;
+    std::shared_ptr<vsomeip::runtime>     rtm_;
     std::shared_ptr<vsomeip::application> app_;
+    uint8_t window_position_;
+    uint8_t vehicle_speed_;
+    bool    window_received_;
+    bool    speed_received_;
 };
