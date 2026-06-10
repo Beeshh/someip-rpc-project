@@ -14,7 +14,7 @@ from someipy import (
 SPEED_SERVICE_ID = 0x1234
 SPEED_INSTANCE_ID = 0x5678
 GET_SPEED_METHOD_ID = 0x0421
-INTERFACE_IP = "100.88.162.130"
+INTERFACE_IP = "192.168.1.41"
 SPEED_ECU_PORT = 3000
 
 async def get_vehicle_speed_handler(payload: bytes, addr: Tuple[str, int]) -> MethodResult:
