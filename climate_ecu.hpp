@@ -6,18 +6,26 @@
 #include <vsomeip/vsomeip.hpp>
 #include <cstdio>
 
+#if defined ANDROID || defined __ANDROID__
+#include "android/log.h"
+#define LOG_TAG "hello_world_client"
+#define LOG_INF(...) fprintf(stdout, __VA_ARGS__), fprintf(stdout, "\n"), (void)__android_log_print(ANDROID_LOG_INFO, LOG_TAG, ##__VA_ARGS__)
+#define LOG_ERR(...) fprintf(stderr, __VA_ARGS__), fprintf(stderr, "\n"), (void)__android_log_print(ANDROID_LOG_ERROR, LOG_TAG, ##__VA_ARGS__)
+#else
+#include <cstdio>
 #define LOG_INF(...) fprintf(stdout, __VA_ARGS__), fprintf(stdout, "\n")
 #define LOG_ERR(...) fprintf(stderr, __VA_ARGS__), fprintf(stderr, "\n")
+#endif
 
 // Window ECU identifiers
-static vsomeip::service_t   window_service_id   = 0x1111;
-static vsomeip::instance_t  window_instance_id  = 0x2222;
-static vsomeip::method_t    window_method_id    = 0x3333;
+static vsomeip::service_t  window_service_id   = 0x1111;
+static vsomeip::instance_t window_instance_id  = 0x2222;
+static vsomeip::method_t   window_method_id    = 0x3333;
 
 // Speed ECU identifiers
-static vsomeip::service_t   speed_service_id    = 0x1234;
-static vsomeip::instance_t  speed_instance_id   = 0x5678;
-static vsomeip::method_t    speed_method_id     = 0x0421;
+static vsomeip::service_t  speed_service_id    = 0x1234;
+static vsomeip::instance_t speed_instance_id   = 0x5678;
+static vsomeip::method_t   speed_method_id     = 0x0421;
 
 class hello_world_client {
 public:
@@ -37,19 +45,20 @@ public:
             std::bind(&hello_world_client::on_state_cbk, this,
                       std::placeholders::_1));
 
-        // Handle responses from BOTH services
+        // Handle responses from ANY service
         app_->register_message_handler(
             vsomeip::ANY_SERVICE, vsomeip::ANY_INSTANCE, vsomeip::ANY_METHOD,
             std::bind(&hello_world_client::on_message_cbk, this,
                       std::placeholders::_1));
 
-        // Watch availability of BOTH services
+        // Watch Window ECU availability
         app_->register_availability_handler(
             window_service_id, window_instance_id,
             std::bind(&hello_world_client::on_availability_cbk, this,
                       std::placeholders::_1, std::placeholders::_2,
                       std::placeholders::_3));
 
+        // Watch Speed ECU availability
         app_->register_availability_handler(
             speed_service_id, speed_instance_id,
             std::bind(&hello_world_client::on_availability_cbk, this,
@@ -63,6 +72,7 @@ public:
 
     void on_state_cbk(vsomeip::state_type_e _state) {
         if (_state == vsomeip::state_type_e::ST_REGISTERED) {
+            // Request both services
             app_->request_service(window_service_id, window_instance_id);
             app_->request_service(speed_service_id,  speed_instance_id);
         }
@@ -73,8 +83,8 @@ public:
                              bool _is_available) {
         if (!_is_available) return;
 
-        // Send request to whichever service just became available
         std::shared_ptr<vsomeip::message> rq = rtm_->create_request();
+        std::shared_ptr<vsomeip::payload> pl = rtm_->create_payload();
 
         if (_service == window_service_id && _instance == window_instance_id) {
             rq->set_service(window_service_id);
@@ -90,8 +100,6 @@ public:
             return;
         }
 
-        // Empty payload (just a request, no data needed)
-        std::shared_ptr<vsomeip::payload> pl = rtm_->create_payload();
         rq->set_payload(pl);
         app_->send(rq);
     }
@@ -103,7 +111,10 @@ public:
             return;
 
         std::shared_ptr<vsomeip::payload> pl = _response->get_payload();
-        if (!pl || pl->get_length() == 0) return;
+        if (!pl || pl->get_length() == 0) {
+            LOG_ERR("Received empty payload");
+            return;
+        }
 
         vsomeip::service_t svc = _response->get_service();
 
@@ -112,6 +123,7 @@ public:
             window_received_ = true;
             LOG_INF("Window position received: %d %%",
                     static_cast<int>(window_position_));
+
         } else if (svc == speed_service_id) {
             vehicle_speed_ = pl->get_data()[0];
             speed_received_ = true;
@@ -119,34 +131,26 @@ public:
                     static_cast<int>(vehicle_speed_));
         }
 
-        // Only print mode once both values are received
+        // Print combined output only when both values are received
         if (window_received_ && speed_received_) {
-            evaluate_and_print();
+            print_climate_state();
             stop();
         }
     }
 
-    void evaluate_and_print() {
-        // Determine mode from window position (matches Pub/Sub logic)
+    void print_climate_state() {
         const char* mode;
-        const char* speed_range;
-        if (window_position_ >= 80) {
-            mode = "LOW";
-            speed_range = "0-30 km/h";
-        } else if (window_position_ >= 50) {
-            mode = "MEDIUM";
-            speed_range = "31-60 km/h";
-        } else if (window_position_ >= 20) {
-            mode = "HIGH";
-            speed_range = "61-90 km/h";
-        } else {
-            mode = "FAST";
-            speed_range = "91-120 km/h";
-        }
-        LOG_INF("Climate ECU: Window=%d%% | Vehicle Speed=%d km/h (%s)",
+        if (window_position_ >= 80)      { mode = "LOW";    }
+        else if (window_position_ >= 50) { mode = "MEDIUM"; }
+        else if (window_position_ >= 20) { mode = "HIGH";   }
+        else                             { mode = "FAST";   }
+
+        LOG_INF("------------------------------------------");
+        LOG_INF("Window=%d%% | Vehicle Speed=%d km/h | Mode: %s",
                 static_cast<int>(window_position_),
                 static_cast<int>(vehicle_speed_),
                 mode);
+        LOG_INF("------------------------------------------");
     }
 
     void stop() {
